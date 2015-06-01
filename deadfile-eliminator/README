@@ -1,0 +1,43 @@
+Open Terminator (Ctrl+Space Terminator) and divide screen (Ctrl+Shift+E).
+
+console-1$ cd /home/you/Desktop/demo/
+console-2$ cd /home/you/Desktop/demo/qemu-1.5.2/
+
+console-1$ python deadfile_eliminator-log.py '/home/you/Desktop/demo/qemu-1.5.2/' > log.txt
+
+console-2$ make distclean
+console-2$ ./configure --target-list="arm-softmmu" --disable-strip --disable-xen --disable-kvm --disable-user --disable-docs
+console-2$ make
+
+WAIT until the compilation is finished.
+
+console-2$ make distclean
+
+console-1$ Ctrl+C
+console-1$ mkdir qemu-1.5.2-clean
+console-1$ python deadfile_eliminator-clean.py 'log.txt' '/home/you/Desktop/demo/qemu-1.5.2-clean'
+
+WAIT (cannot stat messages are normal, links or object files that dissapeared)
+
+console-1$ find /home/you/Desktop/demo/qemu-1.5.2 -type f | wc -l
+console-1$ find /home/you/Desktop/demo/qemu-1.5.2-clean -type f | wc -l
+
+BEFORE: 6025
+AFTER: 1073
+(in the slides I counted the symbolic links)
+
+console-1$ meld qemu-1.5.2/ qemu-1.5.2-clean/
+
+console-1$ rm -R qemu-1.5.2-clean/
+console-1$ rm log.txt
+
+For the kernel you can add the following at the end:
+
+find . -iname 'Kconfig' -print -delete   ,-- deletes Kconfigs
+find . -type d -empty -exec rmdir {} \;  <-- removes empty folders (MUST BE executed several times!)
+
+
+
+
+
+

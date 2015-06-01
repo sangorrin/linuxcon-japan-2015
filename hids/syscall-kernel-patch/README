@@ -1,0 +1,8 @@
+kernel version: 3.10.79
+
+kernel$ patch -p1 < syscall-kernel-patch/0002-syscall-hids-proof-of-concept-version-of-a-syscall-h.patch
+kernel$ cp config-3.10-ubuntu .config
+kernel$ make menuconfig
+kernel$ make
+kernel$ sudo make modules_install
+kernel$ sudo make install

@@ -1,0 +1,34 @@
+File Description
+change_page.c: To attack a process with 'pid',
+and it will change some instrcution of the running process.
+
+reload_mod.sh: Load the module to attack process
+
+Run:
+before you run the following command, you should fisrtly
+run the 'monitored-app'
+make
+./reload_mod.sh
+
+Result:
+After running this module, the process with 'pid' will be
+attacked and some instruction will be modified by this program.
+You can use '$ cmp' command to see the diffierence between
+the original app and the modified app.
+
+Example:
+original one:
+ 80481dd:	c6 05 40 63 0c 08 01	movb   $0x1,0x80c6340
+ 80481e4:	83 c4 14		add    $0x14,%esp
+ 80481e7:	5b			pop    %ebx
+ 80481e8:	5d			pop    %ebp
+ 80481e9:	c3			ret
+
+After run program:
+ 80481dd:	c6 05 40 63 0c 08 01	movb   $0x1,0x80c6340
+ 80481e4:	90			nop
+ 80481e5:	c4 14 5b		les    (%ebx,%ebx,2),%edx
+ 80481e8:	5d			pop    %ebp
+ 80481e9:	c3			ret
+
+From above, we could see 0x80481e4 has been modified into 'nop'.

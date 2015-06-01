@@ -1,0 +1,3 @@
+$ gcc hello.c -lrt
+$ ./syscall-microbench.py
+

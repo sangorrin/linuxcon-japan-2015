@@ -1,0 +1,138 @@
+From d93017882fe4e2151356173ecbed9abb9b39a0cc Mon Sep 17 00:00:00 2001
+From: Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
+Date: Thu, 10 Apr 2014 14:25:05 +0900
+Subject: [PATCH] cgroups: devices: add experimental support for network
+ devices
+
+This adds experimental support for protecting network devices using
+the cgroups Devices controller.
+
+Signed-off-by: Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
+---
+ include/linux/device_cgroup.h | 12 ++++++++---
+ net/core/dev.c                |  7 +++++++
+ security/device_cgroup.c      | 49 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 65 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/device_cgroup.h b/include/linux/device_cgroup.h
+index 8b64221..702981f 100644
+--- a/include/linux/device_cgroup.h
++++ b/include/linux/device_cgroup.h
+@@ -1,6 +1,8 @@
+ #include <linux/fs.h>
++#include <linux/skbuff.h>
++#include <linux/netdevice.h>
+ 
+-#ifdef CONFIG_CGROUP_DEVICE
++#if defined(CONFIG_CGROUP_DEVICE) && defined(CONFIG_CGROUP_NET_CLASSID)
+ extern int __devcgroup_inode_permission(struct inode *inode, int mask);
+ extern int devcgroup_inode_mknod(int mode, dev_t dev);
+ static inline int devcgroup_inode_permission(struct inode *inode, int mask)
+@@ -11,9 +13,13 @@ static inline int devcgroup_inode_permission(struct inode *inode, int mask)
+ 		return 0;
+ 	return __devcgroup_inode_permission(inode, mask);
+ }
+-#else
++extern int devcgroup_queue_xmit(struct sk_buff *skb, struct net_device *dev);
++#else /* !CONFIG_CGROUP_DEVICE || !CONFIG_CGROUP_NET_CLASSID */
+ static inline int devcgroup_inode_permission(struct inode *inode, int mask)
+ { return 0; }
+ static inline int devcgroup_inode_mknod(int mode, dev_t dev)
+ { return 0; }
+-#endif
++static inline int devcgroup_queue_xmit(struct sk_buff *skb,
++				       struct net_device *dev)
++{ return 0; }
++#endif /* CONFIG_CGROUP_DEVICE && CONFIG_CGROUP_NET_CLASSID */
+diff --git a/net/core/dev.c b/net/core/dev.c
+index b1b0c8d..38f124b 100644
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -132,6 +132,7 @@
+ #include <linux/hashtable.h>
+ #include <linux/vmalloc.h>
+ #include <linux/if_macvlan.h>
++#include <linux/device_cgroup.h>
+ 
+ #include "net-sysfs.h"
+ 
+@@ -2827,6 +2828,12 @@ static int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
+ #ifdef CONFIG_NET_CLS_ACT
+ 	skb->tc_verd = SET_TC_AT(skb->tc_verd, AT_EGRESS);
+ #endif
++
++	/* Check access permissions to this interface */
++	rc = devcgroup_queue_xmit(skb, dev);
++	if (rc)
++		goto out;
++
+ 	trace_net_dev_queue(skb);
+ 	if (q->enqueue) {
+ 		rc = __dev_xmit_skb(skb, q, dev, txq);
+diff --git a/security/device_cgroup.c b/security/device_cgroup.c
+index d3b6d2c..d966fc8 100644
+--- a/security/device_cgroup.c
++++ b/security/device_cgroup.c
+@@ -13,6 +13,7 @@
+ #include <linux/slab.h>
+ #include <linux/rcupdate.h>
+ #include <linux/mutex.h>
++#include <net/sock.h>
+ 
+ #define ACC_MKNOD 1
+ #define ACC_READ  2
+@@ -761,3 +762,51 @@ int devcgroup_inode_mknod(int mode, dev_t dev)
+ 			ACC_MKNOD);
+ 
+ }
++
++int devcgroup_queue_xmit(struct sk_buff *skb,  struct net_device *dev) 
++{
++	u32 classid;
++	int err;
++
++// 	printk(KERN_INFO "SANGO: access to %s (ifindex: %d, iflink: %d)\n",
++// 	       dev->name, dev->ifindex, dev->iflink);
++
++	/*
++	 * Packets originating from the net_rx softirq context (e.g.: due to
++	 * bridge functionality) are treated specially. This test assumes
++	 * that all callers explicitely disable bh.
++	 */
++	if (in_serving_softirq()) {
++// 		printk(KERN_INFO "SANGO: in_serving_softirq!!\n");
++// 		dump_stack();
++		err = 0;
++		goto out;
++	}
++
++	if (!skb->sk) {
++// 		printk(KERN_INFO "SANGO: no sk!!\n");
++		err = 0;
++		goto out;
++	}
++
++// 	task_lock(current);
++// 	printk(KERN_INFO "SANGO: task access (pid:%d cmd:%s)\n", 
++// 	       current->pid, current->comm);
++// 	task_unlock(current);
++	
++	classid = skb->sk->sk_classid;
++
++	if (classid != 65552) {
++// 		printk(KERN_INFO "SANGO: deny class %d\n", classid);
++		kfree_skb(skb);
++		return NET_XMIT_DROP;
++	} else {
++// 		printk(KERN_INFO "SANGO: accept class %d\n", classid);
++		err = 0;
++	}
++
++out:
++	return err;
++}
++
++
+-- 
+1.8.3.2
+

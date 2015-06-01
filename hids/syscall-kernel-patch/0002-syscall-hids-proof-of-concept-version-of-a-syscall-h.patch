@@ -1,0 +1,220 @@
+From 91a7aa7a9bccb659a7b50033d843bcf0f3ffeddf Mon Sep 17 00:00:00 2001
+From: Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
+Date: Tue, 19 May 2015 03:03:19 -0700
+Subject: [PATCH 2/2] syscall hids: proof of concept version of a syscall hids
+
+This is not code ready for deployment, just a small piece of code
+for research. It is based on the seccomp infrastructure, which has
+probably changed in the newest kernels.
+
+Signed-off-by: Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
+---
+ include/linux/seccomp.h      |  22 ++++++++
+ include/uapi/linux/seccomp.h |   1 +
+ kernel/seccomp.c             | 117 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 140 insertions(+)
+
+diff --git a/include/linux/seccomp.h b/include/linux/seccomp.h
+index 6f19cfd..d67f0bd 100644
+--- a/include/linux/seccomp.h
++++ b/include/linux/seccomp.h
+@@ -9,6 +9,27 @@
+ #include <asm/seccomp.h>
+ 
+ struct seccomp_filter;
++
++#define MAX_SYSCALLS (350) /* TODO: use NR_syscalls */
++
++#define MAX_SECCOMP_IDS_ENTRIES  (350)
++
++struct seccomp_idsentry {
++	u32 syscall_nr;
++	DECLARE_BITMAP(next_syscalls, MAX_SYSCALLS);
++};
++
++struct seccomp_user_idstable {
++	u32 len;
++	struct seccomp_idsentry __user *entries;
++};
++
++struct seccomp_idstable {
++	u32 prev_syscall;
++	u32 len;
++	struct seccomp_idsentry *entries;
++};
++
+ /**
+  * struct seccomp - the state of a seccomp'ed process
+  *
+@@ -23,6 +44,7 @@ struct seccomp_filter;
+ struct seccomp {
+ 	int mode;
+ 	struct seccomp_filter *filter;
++	struct seccomp_idstable *idstable;
+ };
+ 
+ extern int __secure_computing(int);
+diff --git a/include/uapi/linux/seccomp.h b/include/uapi/linux/seccomp.h
+index ac2dc9f..8423a55 100644
+--- a/include/uapi/linux/seccomp.h
++++ b/include/uapi/linux/seccomp.h
+@@ -9,6 +9,7 @@
+ #define SECCOMP_MODE_DISABLED	0 /* seccomp is not in use. */
+ #define SECCOMP_MODE_STRICT	1 /* uses hard-coded filter. */
+ #define SECCOMP_MODE_FILTER	2 /* uses user-supplied filter. */
++#define SECCOMP_MODE_IDS	3 /* uses user-supplied ids table. */
+ 
+ /*
+  * All BPF programs must return a 32-bit value.
+diff --git a/kernel/seccomp.c b/kernel/seccomp.c
+index b7a1004..fe2476d 100644
+--- a/kernel/seccomp.c
++++ b/kernel/seccomp.c
+@@ -288,6 +288,63 @@ fail:
+ }
+ 
+ /**
++ * seccomp_attach_idstable: Attaches a seccomp idstable to current.
++ * @idstable: idstable to install
++ *
++ * Returns 0 on success or an errno on failure.
++ */
++static long seccomp_attach_idstable(struct seccomp_user_idstable *user)
++{
++	int i;
++	long ret;
++	struct seccomp_idstable *idstable;
++
++	if (user->len == 0 || user->len > MAX_SECCOMP_IDS_ENTRIES)
++		return -EINVAL;
++
++	if (!current->no_new_privs &&
++	    security_capable_noaudit(current_cred(), current_user_ns(),
++				     CAP_SYS_ADMIN) != 0)
++		return -EACCES;
++
++	idstable = kzalloc(sizeof(struct seccomp_idstable),
++			   GFP_KERNEL|__GFP_NOWARN);
++	if (!idstable)
++		return -ENOMEM;
++
++	idstable->entries = kzalloc(user->len*sizeof(struct seccomp_idsentry),
++				    GFP_KERNEL|__GFP_NOWARN);
++	if (!idstable->entries) {
++		kfree(idstable);
++		return -ENOMEM;
++	}
++
++	for (i = 0; i < user->len; i++) {
++		if (copy_from_user(&idstable->entries[i],
++			&user->entries[i], sizeof(struct seccomp_idsentry))) {
++			ret = -EFAULT;
++			goto fail;
++		}
++		if (idstable->entries[i].syscall_nr >= MAX_SYSCALLS) {
++			ret = -EINVAL;
++			goto fail;
++		}
++	}
++
++	idstable->len = user->len;
++	idstable->prev_syscall = MAX_SYSCALLS;
++	current->seccomp.idstable = idstable;
++
++	return 0;
++fail:
++	kfree(idstable->entries);
++	kfree(idstable);
++
++	return ret;
++}
++
++
++/**
+  * seccomp_attach_user_filter - attaches a user-supplied sock_fprog
+  * @user_filter: pointer to the user data containing a sock_fprog.
+  *
+@@ -314,6 +371,24 @@ out:
+ 	return ret;
+ }
+ 
++/**
++ * seccomp_attach_user_idstable - attaches an user-supplied idstable
++ * @user_idstable: pointer to the user data containing an idstable.
++ *
++ * Returns 0 on success and non-zero otherwise.
++ */
++long seccomp_attach_user_idstable(char __user *user_idstable)
++{
++	struct seccomp_user_idstable idstable;
++	long ret = -EFAULT;
++
++	if (copy_from_user(&idstable, user_idstable, sizeof(idstable)))
++		goto out;
++	ret = seccomp_attach_idstable(&idstable);
++out:
++	return ret;
++}
++
+ /* get_seccomp_filter - increments the reference count of the filter on @tsk */
+ void get_seccomp_filter(struct task_struct *tsk)
+ {
+@@ -395,6 +470,40 @@ int __secure_computing(int this_syscall)
+ 		exit_sig = SIGKILL;
+ 		ret = SECCOMP_RET_KILL;
+ 		break;
++	case SECCOMP_MODE_IDS: {
++		int i;
++		struct seccomp_idstable *idstable = current->seccomp.idstable;
++
++		// after prctl the default prev_syscall value is MAX_SYSCALLS
++		if (idstable->prev_syscall == MAX_SYSCALLS) {
++			idstable->prev_syscall = (u32)this_syscall;
++			return 0;
++		}
++
++// 		printk(KERN_EMERG "idstable:\n");
++// 		printk(KERN_EMERG "len: %u\n", idstable->len);
++		for (i = 0; i < idstable->len; i++) {
++// 			printk(KERN_EMERG "syscall_nr[%d]: %u", i, idstable->entries[i].syscall_nr);
++// 			printk(KERN_EMERG "bitmap[%d]:\n", i);
++// 			for (j = 0; j < BITS_TO_LONGS(MAX_SYSCALLS); j++) {
++// 				printk(KERN_EMERG "%lu\n", idstable->entries[i].next_syscalls[j]);
++// 			}
++			if (idstable->entries[i].syscall_nr == idstable->prev_syscall) {
++				if (test_bit(this_syscall, idstable->entries[i].next_syscalls)) {
++					//printk(KERN_EMERG "allowed!\n");
++					idstable->prev_syscall = (u32)this_syscall;
++					return 0;
++				}
++				break;
++			}
++		}
++ 		printk(KERN_EMERG "this_syscall: %d\n", this_syscall);
++ 		printk(KERN_EMERG "prev_syscall: %u\n", idstable->prev_syscall);
++		printk(KERN_EMERG "not allowed!\n");
++		exit_sig = SIGKILL;
++		ret = SECCOMP_RET_KILL;
++		break;
++	}
+ #ifdef CONFIG_SECCOMP_FILTER
+ 	case SECCOMP_MODE_FILTER: {
+ 		int data;
+@@ -495,6 +604,14 @@ long prctl_set_seccomp(unsigned long seccomp_mode, char __user *filter)
+ 		disable_TSC();
+ #endif
+ 		break;
++	case SECCOMP_MODE_IDS:
++		/* TODO: support setting the idstable more than once */
++		if (unlikely(current->seccomp.mode == SECCOMP_MODE_IDS))
++			goto out;
++		ret = seccomp_attach_user_idstable(filter);
++		if (ret)
++			goto out;
++		break;
+ #ifdef CONFIG_SECCOMP_FILTER
+ 	case SECCOMP_MODE_FILTER:
+ 		ret = seccomp_attach_user_filter(filter);
+-- 
+1.8.1.1
+

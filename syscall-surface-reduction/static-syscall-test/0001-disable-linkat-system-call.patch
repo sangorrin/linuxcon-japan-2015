@@ -1,0 +1,26 @@
+From 9f3933cfee723dc2632df2f8d45c0c5e56424727 Mon Sep 17 00:00:00 2001
+From: Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
+Date: Wed, 28 Jan 2015 15:30:25 -0800
+Subject: [PATCH 1/2] disable linkat system call
+
+Signed-off-by: Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
+---
+ arch/x86/syscalls/syscall_32.tbl | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/x86/syscalls/syscall_32.tbl b/arch/x86/syscalls/syscall_32.tbl
+index aabfb83..055171f 100644
+--- a/arch/x86/syscalls/syscall_32.tbl
++++ b/arch/x86/syscalls/syscall_32.tbl
+@@ -309,7 +309,7 @@
+ 300	i386	fstatat64		sys_fstatat64			sys32_fstatat
+ 301	i386	unlinkat		sys_unlinkat
+ 302	i386	renameat		sys_renameat
+-303	i386	linkat			sys_linkat
++303	i386	linkat			sys_ni_syscall
+ 304	i386	symlinkat		sys_symlinkat
+ 305	i386	readlinkat		sys_readlinkat
+ 306	i386	fchmodat		sys_fchmodat
+-- 
+1.8.1.1
+

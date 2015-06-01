@@ -1,0 +1,30 @@
+File description:
+compile_app.sh , monitored-app.c: Compile the monitored-app.c to get the app
+
+loop_dmesg_last_line.sh: Output the last line of command '$ dmesg'.
+It contains the result of xor value comparison.
+
+reload.sh: Load the 'rt-monitor' module.
+
+rt-monitor.c: The module to monitor a process with 'pid'.
+
+kill_monitored-app.sh: to kill the monitored-app process
+
+remove_rt-monitor.sh: to remove the rt-monitor module
+
+Run:
+./compile_and_run_app.sh
+make
+./reload.sh
+
+Notice:
+If you want to stop running the monitored-app, please remove the rt-monitor module before that.
+./remove_rt-monitor.sh should be executed befor ./kill_monitored-app.sh
+The reason is that, before calling kthread_stop(), the thread function should not exit.
+
+Result:
+After running the program 'monitored-app' , we run the 'rt-monitor' module. It will
+monitor the page periodically. We use loop_dmest_last_line.sh to get the last line
+of output of '$ dmesg'. If the 'monitored-app' runs correctly, it will output
+'the xor value are the same'. But if the program meets some attacks(kernel-virus)
+then it will output 'xor value are not same'.

@@ -1,0 +1,4 @@
+monitor/
+        kernel-generator/ <-- extracts hash/xor values from a program
+        kernel-monitor/ <-- kernel module that checks the hash/xor values of a running program
+        kernel-virus/   <-- kernel module that writes into the memory of a running program

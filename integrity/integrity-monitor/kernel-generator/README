@@ -1,0 +1,17 @@
+Files Description:
+compile_app.sh , monitored-app.c: Compile the monitored-app.c to get the app
+
+dump-all-memory-of-pid.sh: Generate 6 .dump files , it contains data of memory
+
+get_text_section.sh: Get the .text section of process named pid. we use both 
+'$ objdump' and '$ od' command to get the memory information.
+
+Run:
+./compile_and_run_app.sh
+./get_text_section.sh
+
+Result:
+It will output the hash value of '$objdump' command and '$od' command.
+Also, there will generate the .text section file for these two command.
+You could check them in objdump_text_section and od_text_section in 
+/example directory.

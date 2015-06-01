@@ -1,0 +1,13 @@
+Make sure you are running a kernel (3.10) with the 
+syscall-based HIDS kernel patch applied.
+
+$ gcc hello.c -lrt
+$ sudo -s
+# ./seccomp-ids-wrapper.sh ./a.out
+ --> 0
+$ gcc hello-virus.c -lrt
+# ./seccomp-ids-wrapper ./a.out
+ --> Killed
+
+
+
