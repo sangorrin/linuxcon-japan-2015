@@ -1,0 +1,63 @@
+LinuxCon Tutorial
+2015 (c) Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
+-------------------------------------------------------------------------------
+
+Patch the kernel
+    $ git clone https://github.com/sangorrin/linuxcon-japan-2015
+    $ wget https://www.kernel.org/pub/linux/kernel/v3.0/linux-3.10.79.tar.xz
+    $ tar Jxvf linux-3.10.79.tar.xz
+    $ mv linux-3.10.79 linux-3.10.79-patched
+    $ tar Jxvf linux-3.10.79.tar.xz
+    $ mv linux-3.10.79 linux-3.10.79-vanilla
+    $ cd linux-3.10.79-patched
+    $ patch -p1 < ../linuxcon-japan-2015/hids/syscall-kernel-patch/0002-\
+        syscall-hids-proof-of-concept-version-of-a-syscall-h.patch 
+
+Build and install the kernel
+    $ make localmodconfig
+    $ make menuconfig (confirm(
+        -> CONFIG_FTRACE_SYSCALLS=y
+        -> SECCOMP_FILTER=y
+    $ make -j4
+    $ sudo make modules_install
+    [Opt] change the hidden timeout so you can select the kernel in grub
+        # vi /etc/default/grub
+            GRUB_HIDDEN_TIMEOUT=10
+        # update-grub
+    $ sudo make install
+    $ sudo reboot
+        -> Shift: select 3.10 kernel
+
+Prepare an application template manually
+    $ kate
+        -> linuxcon-japan-2015/hids/hids-app-template/hello.c
+        -> comment out lines for tracing
+    $ gcc hello.c
+    $ sudo -s 
+    # ../syscall-table-generator/trace-syscalls.sh ./a.out
+        -> copy paste to hello.c
+    $ less ftrace.log
+    $ gcc hello.c
+    $ ./a.out
+        -> it works
+    $ gcc hello.c (after uncommenting time)
+    $ ./a.out
+        -> killed!
+    $ dmesg
+        this_syscall: 13
+        prev_syscall: 4
+        not allowed!
+        type=1326 audit(1433228185.488:32): auid=4294237295 uid=1000 ...
+    $ cat ../../../linux-3.10.79-patched/arch/x86/syscalls/syscall_32.tbl | \
+      awk '$2 != "x32" {printf "{"$1": \x27"$3"\x27}, "}'
+        -> 13: time
+        -> 4: write
+
+    
+        
+        
+        
+        
+        
+        
+        
