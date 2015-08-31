@@ -1,0 +1,273 @@
+From 8bcaaf54f0435938e3c283881d9abb5ef6e0dcf3 Mon Sep 17 00:00:00 2001
+From: Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
+Date: Sun, 30 Aug 2015 23:48:39 -0700
+Subject: [PATCH] hids: port of syscall patch to linux 4.2.0
+
+The seccomp implementation had changed a bit, so update the
+patch.
+
+Signed-off-by: Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
+---
+ include/linux/seccomp.h      |  22 +++++++
+ include/uapi/linux/seccomp.h |   2 +
+ kernel/seccomp.c             | 145 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 169 insertions(+)
+
+diff --git a/include/linux/seccomp.h b/include/linux/seccomp.h
+index a19ddac..d3b6a7e 100644
+--- a/include/linux/seccomp.h
++++ b/include/linux/seccomp.h
+@@ -11,6 +11,27 @@
+ #include <asm/seccomp.h>
+ 
+ struct seccomp_filter;
++
++#define MAX_SYSCALLS (350) /* TODO: use NR_syscalls */
++
++#define MAX_SECCOMP_IDS_ENTRIES  (350)
++
++struct seccomp_idsentry {
++	u32 syscall_nr;
++	DECLARE_BITMAP(next_syscalls, MAX_SYSCALLS);
++};
++
++struct seccomp_user_idstable {
++	u32 len;
++	struct seccomp_idsentry __user *entries;
++};
++
++struct seccomp_idstable {
++	u32 prev_syscall;
++	u32 len;
++	struct seccomp_idsentry *entries;
++};
++
+ /**
+  * struct seccomp - the state of a seccomp'ed process
+  *
+@@ -25,6 +46,7 @@ struct seccomp_filter;
+ struct seccomp {
+ 	int mode;
+ 	struct seccomp_filter *filter;
++	struct seccomp_idstable *idstable;
+ };
+ 
+ #ifdef CONFIG_HAVE_ARCH_SECCOMP_FILTER
+diff --git a/include/uapi/linux/seccomp.h b/include/uapi/linux/seccomp.h
+index 0f238a4..0ccc08c 100644
+--- a/include/uapi/linux/seccomp.h
++++ b/include/uapi/linux/seccomp.h
+@@ -9,10 +9,12 @@
+ #define SECCOMP_MODE_DISABLED	0 /* seccomp is not in use. */
+ #define SECCOMP_MODE_STRICT	1 /* uses hard-coded filter. */
+ #define SECCOMP_MODE_FILTER	2 /* uses user-supplied filter. */
++#define SECCOMP_MODE_IDS	3 /* uses user-supplied ids table. */
+ 
+ /* Valid operations for seccomp syscall. */
+ #define SECCOMP_SET_MODE_STRICT	0
+ #define SECCOMP_SET_MODE_FILTER	1
++#define SECCOMP_SET_MODE_IDS	2
+ 
+ /* Valid flags for SECCOMP_SET_MODE_FILTER */
+ #define SECCOMP_FILTER_FLAG_TSYNC	1
+diff --git a/kernel/seccomp.c b/kernel/seccomp.c
+index 245df6b..063bcd9 100644
+--- a/kernel/seccomp.c
++++ b/kernel/seccomp.c
+@@ -411,6 +411,67 @@ out:
+ }
+ 
+ /**
++ * seccomp_attach_ids: validate and attach ids table
++ * @flags:  flags to change filter behavior
++ * @idstable: seccomp ids table to add to the current process
++ *
++ * Caller must be holding current->sighand->siglock lock.
++ *
++ * Returns 0 on success, -ve on error.
++ */
++static long seccomp_attach_ids(unsigned int flags,
++				struct seccomp_user_idstable *user)
++{
++	int i;
++	long ret;
++	struct seccomp_idstable *idstable;
++
++	assert_spin_locked(&current->sighand->siglock);
++
++	if (user->len == 0 || user->len > MAX_SECCOMP_IDS_ENTRIES)
++		return -EINVAL;
++
++	if (!task_no_new_privs(current) &&
++	    security_capable_noaudit(current_cred(), current_user_ns(),
++				     CAP_SYS_ADMIN) != 0)
++		return -EACCES;
++
++	idstable = kzalloc(sizeof(*idstable), GFP_KERNEL|__GFP_NOWARN);
++	if (!idstable)
++		return -ENOMEM;
++
++	idstable->entries = kzalloc(user->len*sizeof(struct seccomp_idsentry),
++				    GFP_KERNEL|__GFP_NOWARN);
++	if (!idstable->entries) {
++		kfree(idstable);
++		return -ENOMEM;
++	}
++
++	for (i = 0; i < user->len; i++) {
++		if (copy_from_user(&idstable->entries[i],
++			&user->entries[i], sizeof(struct seccomp_idsentry))) {
++			ret = -EFAULT;
++			goto fail;
++		}
++		if (idstable->entries[i].syscall_nr >= MAX_SYSCALLS) {
++			ret = -EINVAL;
++			goto fail;
++		}
++	}
++
++	idstable->len = user->len;
++	idstable->prev_syscall = MAX_SYSCALLS;
++	current->seccomp.idstable = idstable;
++
++	return 0;
++fail:
++	kfree(idstable->entries);
++	kfree(idstable);
++
++	return ret;
++}
++
++/**
+  * seccomp_attach_filter: validate and attach filter
+  * @flags:  flags to change filter behavior
+  * @filter: seccomp filter to add to the current process
+@@ -544,6 +605,45 @@ static void __secure_computing_strict(int this_syscall)
+ 	do_exit(SIGKILL);
+ }
+ 
++static void __secure_computing_ids(int this_syscall)
++{
++	int i;
++	struct seccomp_idstable *idstable = current->seccomp.idstable;
++
++	// after prctl the default prev_syscall value is MAX_SYSCALLS
++	if (idstable->prev_syscall == MAX_SYSCALLS) {
++		idstable->prev_syscall = (u32)this_syscall;
++		return;
++	}
++
++//	printk(KERN_EMERG "idstable:\n");
++//	printk(KERN_EMERG "len: %u\n", idstable->len);
++	for (i = 0; i < idstable->len; i++) {
++//		printk(KERN_EMERG "syscall_nr[%d]: %u", i, idstable->entries[i].syscall_nr);
++//		printk(KERN_EMERG "bitmap[%d]:\n", i);
++//		for (j = 0; j < BITS_TO_LONGS(MAX_SYSCALLS); j++) {
++//			printk(KERN_EMERG "%lu\n", idstable->entries[i].next_syscalls[j]);
++//		}
++		if (idstable->entries[i].syscall_nr == idstable->prev_syscall) {
++			if (test_bit(this_syscall, idstable->entries[i].next_syscalls)) {
++				//printk(KERN_EMERG "allowed!\n");
++				idstable->prev_syscall = (u32)this_syscall;
++				return;
++			}
++			break;
++		}
++	}
++
++	printk(KERN_EMERG "this_syscall: %d\n", this_syscall);
++	printk(KERN_EMERG "prev_syscall: %u\n", idstable->prev_syscall);
++	printk(KERN_EMERG "not allowed!\n");
++#ifdef SECCOMP_DEBUG
++	dump_stack();
++#endif
++	audit_seccomp(this_syscall, SIGKILL, SECCOMP_RET_KILL);
++	do_exit(SIGKILL);
++}
++
+ #ifndef CONFIG_HAVE_ARCH_SECCOMP_FILTER
+ void secure_computing_strict(int this_syscall)
+ {
+@@ -553,6 +653,8 @@ void secure_computing_strict(int this_syscall)
+ 		return;
+ 	else if (mode == SECCOMP_MODE_STRICT)
+ 		__secure_computing_strict(this_syscall);
++	else if (mode == SECCOMP_MODE_IDS)
++		__secure_computing_ids(this_syscall);
+ 	else
+ 		BUG();
+ }
+@@ -658,6 +760,9 @@ u32 seccomp_phase1(struct seccomp_data *sd)
+ 	case SECCOMP_MODE_FILTER:
+ 		return __seccomp_phase1_filter(this_syscall, sd);
+ #endif
++	case SECCOMP_MODE_IDS:
++		__secure_computing_ids(this_syscall);  /* may call do_exit */
++		return SECCOMP_PHASE1_OK;
+ 	default:
+ 		BUG();
+ 	}
+@@ -739,6 +844,40 @@ out:
+ 	return ret;
+ }
+ 
++/**
++ * seccomp_set_mode_ids: internal function for setting seccomp ids table
++ * @flags:  flags to change ids behavior
++ * @table: user idstable
++ *
++ * Returns 0 on success or -EINVAL on failure.
++ */
++static long seccomp_set_mode_ids(unsigned int flags,
++				 const char __user *user_idstable)
++{
++	const unsigned long seccomp_mode = SECCOMP_MODE_IDS;
++	long ret = -EINVAL;
++	struct seccomp_user_idstable idstable;
++
++	spin_lock_irq(&current->sighand->siglock);
++
++	if (unlikely(current->seccomp.mode == SECCOMP_MODE_IDS))
++		goto out;
++
++	if (copy_from_user(&idstable, user_idstable, sizeof(idstable))) {
++		ret = -EFAULT;
++		goto out;
++	}
++
++	ret = seccomp_attach_ids(flags, &idstable);
++	if (ret)
++		goto out;
++
++	seccomp_assign_mode(current, seccomp_mode);
++out:
++	spin_unlock_irq(&current->sighand->siglock);
++	return ret;
++}
++
+ #ifdef CONFIG_SECCOMP_FILTER
+ /**
+  * seccomp_set_mode_filter: internal function for setting seccomp filter
+@@ -816,6 +955,8 @@ static long do_seccomp(unsigned int op, unsigned int flags,
+ 		return seccomp_set_mode_strict();
+ 	case SECCOMP_SET_MODE_FILTER:
+ 		return seccomp_set_mode_filter(flags, uargs);
++	case SECCOMP_SET_MODE_IDS:
++		return seccomp_set_mode_ids(flags, uargs);
+ 	default:
+ 		return -EINVAL;
+ 	}
+@@ -853,6 +994,10 @@ long prctl_set_seccomp(unsigned long seccomp_mode, char __user *filter)
+ 		op = SECCOMP_SET_MODE_FILTER;
+ 		uargs = filter;
+ 		break;
++	case SECCOMP_MODE_IDS:
++		op = SECCOMP_SET_MODE_IDS;
++		uargs = filter;
++		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+-- 
+1.9.1
+
