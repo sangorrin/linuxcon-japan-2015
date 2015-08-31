@@ -2,6 +2,9 @@ LinuxCon Tutorial
 2015 (c) Daniel Sangorrin <daniel.sangorrin@toshiba.co.jp>
 -------------------------------------------------------------------------------
 
+Tools
+    meld, terminator, git, kate, 
+
 Patch the kernel
     $ git clone https://github.com/sangorrin/linuxcon-japan-2015
     $ wget https://www.kernel.org/pub/linux/kernel/v3.0/linux-3.10.79.tar.xz
@@ -18,7 +21,7 @@ Build and install the kernel
     $ make menuconfig (confirm(
         -> CONFIG_FTRACE_SYSCALLS=y
         -> SECCOMP_FILTER=y
-    $ make -j4
+    $ make -j4 (use lscpu to know how many cores you have)
     $ sudo make modules_install
     [Opt] change the hidden timeout so you can select the kernel in grub
         # vi /etc/default/grub
@@ -29,20 +32,30 @@ Build and install the kernel
         -> Shift: select 3.10 kernel
 
 Prepare an application template manually
+    $ sudo apt-get install python-matplotlib trace-cmd
     $ kate
         -> linuxcon-japan-2015/hids/hids-app-template/hello.c
-        -> comment out lines for tracing
+        -> comment out seccomp-related lines
     $ gcc hello.c
     $ sudo -s 
     # ../syscall-table-generator/trace-syscalls.sh ./a.out
-        -> copy paste to hello.c
-    $ less ftrace.log
+        idstable.entries[0].syscall_nr = 192;
+        set_bit(192, idstable.entries[0].next_syscalls);
+        set_bit(33, idstable.entries[0].next_syscalls);
+        set_bit(243, idstable.entries[0].next_syscalls);
+        set_bit(4, idstable.entries[0].next_syscalls);
+        ...
+        [Note] extracted from ftrace.log 
+    $ vi hello.c
+        -> copy&paste the output above to hello.c (fill <<TEMPLATE>> fields)
     $ gcc hello.c
     $ ./a.out
-        -> it works
-    $ gcc hello.c (after uncommenting time)
+        -> it works normally (syscalls are called in the right order)
+    $ vi hello.c 
+        -> uncomment the 'time()' call to introduce a illegal system call.
+    $ gcc hello.c 
     $ ./a.out
-        -> killed!
+        -> killed!! (so IT WORKS!)
     $ dmesg
         this_syscall: 13
         prev_syscall: 4
@@ -52,12 +65,3 @@ Prepare an application template manually
       awk '$2 != "x32" {printf "{"$1": \x27"$3"\x27}, "}'
         -> 13: time
         -> 4: write
-
-    
-        
-        
-        
-        
-        
-        
-        
